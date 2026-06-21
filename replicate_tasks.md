@@ -202,7 +202,8 @@ A modified clone of `scripts/debian.sh` that:
 - Installs the `ucspi-tcp` package to provide `tcpserver`.
 - Compiles the CGI server at `alpine/apps/server/server.c` using the ARM compiler wrapper and copies it to `/var/www/apps/server/server`.
 - Deploys static Bazaar assets (`index.html`, `index_122_88.html`, `css/`, `stop.sh`) to `/var/www/apps/`.
-- Deploys all 10 `122_88` project directories to the rootfs and cross-compiles their servers on the host using a temporary `gcc` binary path wrapper (intercepting calls to redirect them to `arm-linux-gnueabihf-gcc`).
+- Deploys all 10 `122_88` project directories to the rootfs and cross-compiles their servers on the host using temporary `gcc` and `cc` binary path wrappers (intercepting compiler calls to redirect them to `arm-linux-gnueabihf-gcc`).
+- Explicitly passes `CC=gcc` to all Makefile invocations, ensuring that Makefiles using `$(CC)` correctly route to our wrapper path instead of standard host `cc`.
 - Enables `red-pitaya-bazaar` and `sdr-transceiver-hpsdr-autostart` services.
 - Mounts `/proc`, `/sys`, `/dev`, `/dev/pts` to prevent `debootstrap` chroot warning issues.
 

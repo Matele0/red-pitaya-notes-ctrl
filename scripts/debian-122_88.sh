@@ -64,16 +64,21 @@ rm $root_dir/etc/apt/sources.list
 cp -r debian/etc/apt $root_dir/etc/
 cp -r debian/etc/systemd $root_dir/etc/
 
-# Create a wrapper for gcc to redirect to the cross-compiler
+# Create wrappers for gcc and cc to redirect to the cross-compiler
 mkdir -p tmp/bin
 echo '#!/bin/sh' > tmp/bin/gcc
 echo 'exec arm-linux-gnueabihf-gcc "$@"' >> tmp/bin/gcc
 chmod +x tmp/bin/gcc
+
+echo '#!/bin/sh' > tmp/bin/cc
+echo 'exec arm-linux-gnueabihf-gcc "$@"' >> tmp/bin/cc
+chmod +x tmp/bin/cc
+
 PATH_WRAPPER="$(pwd)/tmp/bin"
 
 # Compile and copy Bazaar homepage CGI server
-PATH=$PATH_WRAPPER:$PATH make -C alpine/apps/server clean
-PATH=$PATH_WRAPPER:$PATH make -C alpine/apps/server
+PATH=$PATH_WRAPPER:$PATH make -C alpine/apps/server CC=gcc clean
+PATH=$PATH_WRAPPER:$PATH make -C alpine/apps/server CC=gcc
 mkdir -p $root_dir/var/www/apps/server
 cp alpine/apps/server/server $root_dir/var/www/apps/server/
 
@@ -103,8 +108,8 @@ do
   # Compile inside target using the wrapper
   if [ -f $root_dir/var/www/apps/$prj/Makefile ]
   then
-    PATH=$PATH_WRAPPER:$PATH make -C $root_dir/var/www/apps/$prj clean
-    PATH=$PATH_WRAPPER:$PATH make -C $root_dir/var/www/apps/$prj
+    PATH=$PATH_WRAPPER:$PATH make -C $root_dir/var/www/apps/$prj CC=gcc clean
+    PATH=$PATH_WRAPPER:$PATH make -C $root_dir/var/www/apps/$prj CC=gcc
   fi
 
   # Copy bitstream file to target
