@@ -1,0 +1,14 @@
+[Unit]
+Description=HPSDR SDR Transceiver Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'cat /usr/local/share/sdr-transceiver-hpsdr.bit > /dev/xdevcfg'
+ExecStart=/usr/local/bin/sdr-transceiver-hpsdr 1 2 2 2 1 2
+Restart=always
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Autostart HPSDR Transceiver
+After=red-pitaya-bazaar.service
+
+[Service]
+Type=oneshot
+ExecStart=/var/www/apps/sdr_transceiver_hpsdr_122_88/start.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

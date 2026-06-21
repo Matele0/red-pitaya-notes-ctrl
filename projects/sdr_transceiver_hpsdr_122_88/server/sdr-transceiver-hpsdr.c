@@ -42,6 +42,11 @@
 #define ADDR_DAC1 0x61 /* MCP4725 address 1 */
 #define ADDR_ARDUINO 0x40 /* G8NJJ Arduino sketch */
 #define ADDR_NUCLEO 0x55 /* NUCLEO-G071RB */
+#define ADDR_HL2IO 0x1D /* HL2IO board Pico */
+
+#define REG_RX1_ATT       9
+#define REG_RX2_ATT       10
+#define REG_TX_DRIVE      11
 
 volatile uint32_t *rx_freq, *tx_freq, *alex, *dac_freq;
 volatile uint16_t *rx_rate, *rx_cntr, *tx_cntr, *dac_cntr, *adc_cntr;
@@ -77,6 +82,7 @@ int i2c_dac0 = 0;
 int i2c_dac1 = 0;
 int i2c_arduino = 0;
 int i2c_nucleo = 0;
+int i2c_hl2io = 0;
 
 uint16_t i2c_pene_data = 0;
 uint16_t i2c_alex_data = 0;
@@ -119,6 +125,71 @@ int cw_memory[2] = {0, 0};
 int cw_ptt_delay = 0;
 
 uint16_t rx_sync_data = 0;
+
+pthread_mutex_t i2c_mutex = PTHREAD_MUTEX_INITIALIZER;
+volatile uint16_t hl2io_adc0 = 0;
+volatile uint16_t hl2io_adc1 = 0;
+
+void *hl2io_adc_thread(void *arg)
+{
+  uint8_t buffer[4];
+  uint16_t val0, val1;
+
+  while(1)
+  {
+    if(i2c_hl2io)
+    {
+      pthread_mutex_lock(&i2c_mutex);
+      uint8_t reg = 12; // REG_ADC0_MSB
+      ioctl(i2c_fd, I2C_SLAVE, ADDR_HL2IO);
+      if(write(i2c_fd, &reg, 1) == 1)
+      {
+        if(read(i2c_fd, buffer, 4) == 4)
+        {
+          val0 = (buffer[0] << 8) | buffer[1];
+          val1 = (buffer[2] << 8) | buffer[3];
+          hl2io_adc0 = val0;
+          hl2io_adc1 = val1;
+        }
+      }
+      pthread_mutex_unlock(&i2c_mutex);
+    }
+    usleep(50000); // Poll every 50 ms
+  }
+  return NULL;
+}
+
+void hl2io_write_freq(uint32_t freq)
+{
+  if(!i2c_hl2io) return;
+
+  uint8_t buffer[6];
+  buffer[0] = 0;                          // Start register (REG_TX_FREQ_BYTE4)
+  buffer[1] = ((uint64_t)freq >> 32) & 0xff; // MSB
+  buffer[2] = (freq >> 24) & 0xff;
+  buffer[3] = (freq >> 16) & 0xff;
+  buffer[4] = (freq >> 8) & 0xff;
+  buffer[5] = freq & 0xff;                // LSB
+
+  pthread_mutex_lock(&i2c_mutex);
+  ioctl(i2c_fd, I2C_SLAVE, ADDR_HL2IO);
+  write(i2c_fd, buffer, 6);
+  pthread_mutex_unlock(&i2c_mutex);
+}
+
+void hl2io_write_reg(uint8_t reg, uint8_t val)
+{
+  if(!i2c_hl2io) return;
+
+  uint8_t buffer[2];
+  buffer[0] = reg;
+  buffer[1] = val;
+
+  pthread_mutex_lock(&i2c_mutex);
+  ioctl(i2c_fd, I2C_SLAVE, ADDR_HL2IO);
+  write(i2c_fd, buffer, 2);
+  pthread_mutex_unlock(&i2c_mutex);
+}
 
 ssize_t i2c_write_addr_data8(int fd, uint8_t addr, uint8_t data)
 {
@@ -535,6 +606,14 @@ int main(int argc, char *argv[])
         i2c_nucleo = 1;
       }
     }
+    if(ioctl(i2c_fd, I2C_SLAVE, ADDR_HL2IO) >= 0)
+    {
+      uint8_t reset_buf[2] = {5, 1}; // REG_CONTROL = 1
+      if(write(i2c_fd, reset_buf, 2) > 0)
+      {
+        i2c_hl2io = 1;
+      }
+    }
     if(ioctl(i2c_fd, I2C_SLAVE, ADDR_CODEC) >= 0)
     {
       /* reset */
@@ -683,6 +762,7 @@ int main(int argc, char *argv[])
   }
 
   calc_log_lookup();
+  hl2io_write_freq(600000);
 
   if((sock_ep2 = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
   {
@@ -718,6 +798,13 @@ int main(int argc, char *argv[])
   param.sched_priority = 99;
   pthread_attr_setschedparam(&attr, &param);
   if(pthread_create(&thread, &attr, handler_keyer, NULL) < 0)
+  {
+    perror("pthread_create");
+    return EXIT_FAILURE;
+  }
+  pthread_detach(thread);
+
+  if(pthread_create(&thread, NULL, hl2io_adc_thread, NULL) < 0)
   {
     perror("pthread_create");
     return EXIT_FAILURE;
@@ -785,8 +872,10 @@ int main(int argc, char *argv[])
             for(j = 0; j < 504; j += 8) *codec = *(uint32_t *)(buffer[i] + 16 + j);
             for(j = 0; j < 504; j += 8) *codec = *(uint32_t *)(buffer[i] + 528 + j);
           }
+          pthread_mutex_lock(&i2c_mutex);
           process_ep2(buffer[i] + 11);
           process_ep2(buffer[i] + 523);
+          pthread_mutex_unlock(&i2c_mutex);
           break;
         case 0x0002feef:
           reply[2] = 2 + active_thread;
@@ -830,6 +919,7 @@ int main(int argc, char *argv[])
       alex_update = 1;
     }
 
+    pthread_mutex_lock(&i2c_mutex);
     if(alex_update)
     {
       alex_update = 0;
@@ -854,6 +944,7 @@ int main(int argc, char *argv[])
       nucleo_update = 0;
       nucleo_write();
     };
+    pthread_mutex_unlock(&i2c_mutex);
   }
   close(sock_ep2);
 
@@ -1007,6 +1098,7 @@ void process_ep2(uint8_t *frame)
       if(freq_data[0] != freq)
       {
         freq_data[0] = freq;
+        hl2io_write_freq(freq);
         icom_write();
         alex_update = 1;
         if(i2c_misc) misc_update = 1;
@@ -1033,6 +1125,7 @@ void process_ep2(uint8_t *frame)
       if(freq_data[1] != freq)
       {
         freq_data[1] = freq;
+        hl2io_write_freq(freq);
         if(rx_sync_data)
         {
           /* reset rx los */
@@ -1164,6 +1257,7 @@ void process_ep2(uint8_t *frame)
 
       /* configure level */
       data = frame[1];
+      hl2io_write_reg(REG_TX_DRIVE, data);
       if(i2c_level)
       {
         if(i2c_level_data != data)
@@ -1219,6 +1313,7 @@ void process_ep2(uint8_t *frame)
     case 20:
     case 21:
       rx_att_data = frame[4] & 0x1f;
+      hl2io_write_reg(REG_RX1_ATT, rx_att_data);
       if(i2c_misc)
       {
         data = frame[4] & 0x1f;
@@ -1256,6 +1351,7 @@ void process_ep2(uint8_t *frame)
       break;
     case 22:
     case 23:
+      hl2io_write_reg(REG_RX2_ATT, frame[1] & 0x1f);
       if(i2c_misc)
       {
         data = frame[1] & 0x1f;
@@ -1446,10 +1542,12 @@ void *handler_ep6(void *arg)
       }
       else if(header_offset == 16)
       {
-        value = xadc[16] >> 3;
+        // value = xadc[16] >> 3;
+        value = i2c_hl2io ? hl2io_adc0 : (xadc[16] >> 3);
         pointer[4] = (value >> 8) & 0xff;
         pointer[5] = value & 0xff;
-        value = xadc[17] >> 3;
+        // value = xadc[17] >> 3;
+        value = i2c_hl2io ? hl2io_adc1 : (xadc[17] >> 3);
         pointer[6] = (value >> 8) & 0xff;
         pointer[7] = value & 0xff;
       }
